@@ -5,6 +5,26 @@
 #include <stdlib.h>
 #include <malloc.h>
 
+#ifndef UNICODE
+#define UNICODE
+#endif 
+
+//include GLEW
+//#include <GL/glew.h>
+
+// Include GLFW
+//#include <GLFW/glfw3.h>
+
+//#pragma comment(lib,"glew32.lib")
+//#pragma comment(lib,"glfw3.lib")
+//#pragma comment(lib,"opengl32.lib")
+
+							//will put glew32.dll in game exe
+#define WINDOW_WIDTH 640
+#define WINDOW_HEIGHT 480
+//#define WINDOW_TITLE "OpenGL Project"
+LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+//#define GLEW_STATIC
 using namespace std;
 
 
@@ -14,7 +34,8 @@ typedef struct ConditionCodes {
     uint8_t    p:1;    
     uint8_t    cy:1;    
     uint8_t    ac:1;    
-    uint8_t    pad:3;    
+    uint8_t    pad:3;  
+	uint8_t    int_enable:1;
 } ConditionCodes;
 
 typedef struct StateMachine {    
@@ -25,23 +46,17 @@ typedef struct StateMachine {
     uint8_t    e;    
     uint8_t    h;    
     uint8_t    l;    
-    uint16_t    sp;    
+    int16_t    sp;    
     uint16_t    pc;    
-    uint8_t    *memory; //1FFF is the last of the ROM, ram is at $2000 and working ram is $4000 and vid is $6000   
-    struct      ConditionCodes      cc;    
-    uint8_t     int_enable;    
+    uint8_t    *memory; //1FFF is the last of the ROM, ram is at $2000 and working ram is $4000 and vid is $6000  
+	uint16_t   *st; //(max 256)
+    struct      ConditionCodes      cc;   
 } StateMachine;    
-
-
 
 typedef struct{
 	char* op;
 	int size;
 } OPCODE;
-
-
-int Disassemble(unsigned char *, int, FILE *);
-int UnitTest8080(StateMachine *);
 
 //Certain instructions are "non-instructions" set the bytes to 1 so that if for some reason that instructionis encountered we can skip it
 OPCODE opCode[] = {{"NOP",1},{"LXI   B,#",3},{"STAX  B",1},{"INX   B",1},{"INR   B",1},{"DCR   B",1},{"MVI   B,#",2},{"RLC",1},{"",1},{"DAD   B",1},{"LDAX  B",1},{"DCX   B",1},
@@ -71,170 +86,11 @@ OPCODE opCode[] = {{"NOP",1},{"LXI   B,#",3},{"STAX  B",1},{"INX   B",1},{"INR  
 void UnimplementedInstruction(StateMachine*);
 int Emulate8080(StateMachine*,bool);
 int Reset8080(StateMachine*);
-
-int Disassemble(unsigned char *buffer, int cntr, FILE *fb)
-{
-
-	char address[1024];
-	string op;
-
-	if(opCode[(int)buffer[cntr]].size == 1)
-	{
-		op = string(opCode[(int)buffer[cntr]].op);
-		sprintf(address,"%04X  %s\n",cntr,op.c_str());
-	}
-
-	if(opCode[(int)buffer[cntr]].size == 2)
-	{
-		if(string(opCode[(int)buffer[cntr]].op).find("adr") != string::npos)
-			op = string(opCode[(int)buffer[cntr]].op).substr(0,string(opCode[(int)buffer[cntr]].op).find("adr")-1);
-		else
-			op = string(opCode[(int)buffer[cntr]].op);
-
-		sprintf(address,"%04X  %s$%02X\n",cntr,op.c_str(),(int)buffer[cntr+1]);
-	}
-	
-	if( opCode[(int)buffer[cntr]].size == 3)
-	{
-		if(string(opCode[(int)buffer[cntr]].op).find("adr") != string::npos)
-			op = string(opCode[(int)buffer[cntr]].op).substr(0,string(opCode[(int)buffer[cntr]].op).find("adr")-1);
-		else
-			op = string(opCode[(int)buffer[cntr]].op);
-
-		//adr was found in the instruction, remove it then put the address in there	
-		sprintf(address,"%04X  %s   $%02X%02X\n",cntr,op.c_str(),(int)buffer[cntr+2],(int)buffer[cntr+1]);
-		cout << address << endl; //for testing
-
-	}
-	//build string to write 
-			
-	fwrite(address,sizeof(char),strlen(address),fb);
-		
-	return opCode[(int)buffer[cntr]].size;
-}
-
-void UnimplementedInstruction(StateMachine* state)
-{
-	//move the program counter back by 1, but we are exiting so who cares
-	state->pc-=1;
-	printf ("Error: Unimplemented instruction\n");  
-	exit(1);
-}
-
-int Emulate8080(StateMachine* state, bool test)
-{
-	uint8_t *op = &state->memory[state->pc];
-	uint16_t address;
-	
-	if(test)
-	{
-		printf("Before op %s\n",opCode[*op].op);
-		UnitTest8080(state);
-	}
-	switch(*op)	
-	{
-		case 0:	break;											//op 0x00 NOP
-		case 1:													//op 0x01 LXI B	
-			state->c = op[1];
-			state->b = op[2];
-			state->pc+=2;			
-			break;
-		case 2:													//op 0x02 STAX B
-			address = state->b;
-			address = (address << 8)|(uint16_t)state->c;
-			state->memory[address]=state->a;			
-			break;
-		case 3:													//op 0x03 INX B
-			address = state->b;
-			address = (address << 8) | (uint16_t)state->c;
-			state->memory[address] = ((uint16_t)address) + 1;			
-			break;
-		case 4:													//op 0x04 INR V
-			{
-			state->b = state->b + 1;
-			//set 0 code if the add made 0 (why would it!)
-			state->cc.z = state->b == 0x00;
-			state->cc.s = (state->b >> 7) == 0x01;
-			
-			//check for parity
-			int p=0;
-			uint8_t par = state->b;
-			for(int i=0;i<sizeof(uint8_t);i++)
-			{
-				if(par & 1)
-					p++;
-				par = par >> 1;
-			}
-			if(p % 2 == 0)
-				state->cc.p = 1;
-			else
-				state->cc.p = 0;
-			}
-			break;
-		case 6:													//op 0x06 MVI B
-			state->b = state->memory[state->pc+1];
-			break;
-		case 17:												//op 0x11 LXI D
-			state->d = state->memory[state->pc+2];
-			state->e = state->memory[state->pc+1];
-			state->pc+=2;
-			break;
-		case 49:												//op 0x31 LXI SP
-			{
-			state->sp = state->memory[state->pc+2];
-			state->sp = (state->sp << 8) | state->memory[state->pc+1];
-			state->pc+=2;
-			}
-			break;
-		case 195:												//op 0xC3 JMP
-			{
-			state->pc = (state->memory[state->pc+2] << 8) | state->memory[state->pc+1];
-			state->pc--;
-			}
-			break;
-		case 205:												//op CALL					
-			state->memory[state->sp]  = state->memory[state->pc+2];
-			state->memory[state->sp + 1] = (state->memory[state->pc+1]);
-			state->sp+=2;
-			state->pc= (state->memory[state->pc+2] << 8) | state->memory[state->pc+1];
-			//(SP-1)=PC.HI,(SP-2)=PC.LO, SP=SP+2, PC=adr
-			//store the program counter in SP, inc SP by 2, set the PC to the addrress passed
-			state->pc--;
-			break;
-
-	}
-
-	state->pc++;
-	
-	if(test)
-		UnitTest8080(state);
-	return 0;
-}
-int Reset8080(StateMachine *state)
-{
-	state->a = 0;
-	state->b = 0;
-	state->c = 0;
-	state->d = 0;
-	state->e = 0;
-	state->h = 0;
-	state->l = 0;
-	state->sp = 0;
-	state->cc.ac = 0;
-	state->cc.cy = 0;
-	state->cc.p = 0;
-	state->cc.s = 0;
-	state->cc.z = 0;
-	state->cc.pad = 0;
-	state->pc = 0;
-	state->int_enable = 0;
-
-	return 1;
-}
-
-int UnitTest8080(StateMachine *testState)
-{	
-	printf("Current state:\n A: %02X B: %02X C: %02X D: %02X E: %02X H: %02X L: %02X SP: %04X PC: %04X  Condition Codes: AC: %02X CY: %02X P: %02X S: %02X Z: %02X PAD: %02X\n\n",testState->a,testState->b,testState->c,testState->d,testState->e,testState->h,testState->l,testState->sp, testState->pc,testState->cc.ac,testState->cc.cy,testState->cc.p,testState->cc.p,testState->cc.s,testState->cc.z,testState->cc.pad);
-	
-	return 0;
-}
+void push(StateMachine*,uint16_t);
+uint16_t pop(StateMachine*);
+void parity(StateMachine *, uint8_t);
+void drawInvaders(StateMachine *);
+void generateInterrupt(StateMachine* state, int intNum, HWND hwnd);
+int Disassemble(unsigned char *, int, FILE *);
+int UnitTest8080(StateMachine *);
+void paintInvaders(HWND, StateMachine*);
